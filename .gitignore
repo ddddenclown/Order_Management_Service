@@ -14,7 +14,11 @@ htmlcov/
 .env
 !.env.example
 
+.DS_Store
+
+.architect_lite.json
+AGENTS.md
+
 dist/
 build/
 *.egg-info/
-

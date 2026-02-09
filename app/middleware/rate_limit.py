@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from dataclasses import dataclass
 
@@ -9,6 +11,8 @@ from starlette.responses import JSONResponse, Response
 
 from app.core.config import settings
 from app.core.redis import get_redis
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,11 +52,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _allow_redis(self, key: str) -> bool | None:
         try:
             redis = get_redis()
-            count = await redis.incr(key)
+            count = await asyncio.wait_for(redis.incr(key), timeout=settings.redis_socket_timeout_seconds)
             if count == 1:
-                await redis.expire(key, settings.rate_limit_seconds)
+                await asyncio.wait_for(
+                    redis.expire(key, settings.rate_limit_seconds),
+                    timeout=settings.redis_socket_timeout_seconds,
+                )
             return count <= settings.rate_limit_times
-        except Exception:
+        except Exception as exc:
+            logger.debug("Rate limiter redis unavailable, falling back to memory: %s", exc)
             return None
 
     def _allow_memory(self, key: str, now: float) -> bool:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.cache import cache_get_order, cache_set_order
@@ -16,6 +17,7 @@ from app.messaging.rabbit import publisher
 from app.schemas.order import OrderCreate, OrderPublic, OrderUpdateStatus
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _calc_total(items: list[dict]) -> float:
@@ -26,7 +28,7 @@ def _calc_total(items: list[dict]) -> float:
 async def create_order(
     payload: OrderCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> OrderPublic:
     items = [item.model_dump() for item in payload.items]
     order = Order(
@@ -36,19 +38,20 @@ async def create_order(
         status=OrderStatus.PENDING,
     )
     db.add(order)
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
 
     payload_out = OrderPublic.model_validate(order, from_attributes=True).model_dump(mode="json")
     try:
         redis = get_redis()
         await cache_set_order(redis, order.id, payload_out)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to cache order %s: %s", order.id, exc)
         pass
     try:
         await publisher.publish_json({"type": "new_order", "order_id": str(order.id), "user_id": order.user_id})
     except Exception as exc:
-        print(f"Failed to publish new_order event: {exc}")
+        logger.warning("Failed to publish new_order event (order_id=%s): %s", order.id, exc)
     return OrderPublic.model_validate(payload_out)
 
 
@@ -56,7 +59,7 @@ async def create_order(
 async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> OrderPublic:
     try:
         redis = get_redis()
@@ -65,10 +68,11 @@ async def get_order(
             if cached.get("user_id") != current_user.id:
                 raise HTTPException(status_code=403, detail="Forbidden")
             return OrderPublic.model_validate(cached)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Cache read failed for order %s: %s", order_id, exc)
         pass
 
-    order = db.scalar(select(Order).where(Order.id == order_id))
+    order = await db.scalar(select(Order).where(Order.id == order_id))
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
@@ -77,7 +81,8 @@ async def get_order(
     try:
         redis = get_redis()
         await cache_set_order(redis, order_id, payload)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Cache write failed for order %s: %s", order_id, exc)
         pass
     return OrderPublic.model_validate(payload)
 
@@ -87,33 +92,36 @@ async def update_order_status(
     order_id: uuid.UUID,
     payload: OrderUpdateStatus,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> OrderPublic:
-    order = db.scalar(select(Order).where(Order.id == order_id))
+    order = await db.scalar(select(Order).where(Order.id == order_id))
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
     if order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
     order.status = payload.status
     db.add(order)
-    db.commit()
-    db.refresh(order)
+    await db.commit()
+    await db.refresh(order)
     payload_out = OrderPublic.model_validate(order, from_attributes=True).model_dump(mode="json")
     try:
         redis = get_redis()
         await cache_set_order(redis, order_id, payload_out)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Cache write failed for order %s: %s", order_id, exc)
         pass
     return OrderPublic.model_validate(payload_out)
 
 
 @router.get("/orders/user/{user_id}/", response_model=list[OrderPublic])
-def list_user_orders(
+async def list_user_orders(
     user_id: int,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> list[OrderPublic]:
     if user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
-    orders = db.scalars(select(Order).where(Order.user_id == user_id).order_by(Order.created_at.desc())).all()
+    orders = (
+        await db.scalars(select(Order).where(Order.user_id == user_id).order_by(Order.created_at.desc()))
+    ).all()
     return [OrderPublic.model_validate(order, from_attributes=True) for order in orders]

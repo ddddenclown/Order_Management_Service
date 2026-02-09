@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,6 +11,7 @@ from app.middleware.rate_limit import RateLimitMiddleware
 
 
 def create_app() -> FastAPI:
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
     app = FastAPI(
         title="Order Management Service",
         version="0.1.0",

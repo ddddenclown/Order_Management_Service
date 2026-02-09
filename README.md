@@ -33,3 +33,13 @@ RabbitMQ UI: `http://localhost:15672` (логин/пароль по умолча
 Отдельный процесс `event-consumer` читает очередь `new_order` в RabbitMQ и запускает Celery task `process_order`.
 Задача делает `sleep(2)` и печатает `Order {order_id} processed`.
 
+## Проверка (тесты)
+
+Быстрый e2e прогон (поднятый compose обязателен):
+```bash
+docker compose up -d --build
+python3 scripts/e2e_check.py
+docker compose down
+```
+
+Примечание по БД: миграции Alembic используют `DATABASE_URL` (sync driver `psycopg`), а само приложение подключается асинхронно (driver `asyncpg`) через автоматическую конверсию URL внутри конфигурации.

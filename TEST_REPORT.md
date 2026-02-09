@@ -1,6 +1,6 @@
 # Отчет о запуске и проверке сервиса (Order Management Service)
 
-Дата проверки: **2026-02-08**  
+Дата проверки: **2026-02-09**  
 Окружение: **macOS**, Docker **29.1.3**, Docker Compose **v2.40.3-desktop.1**
 
 ## 1) Как запускалось
@@ -12,6 +12,12 @@
 2. Запуск инфраструктуры и приложения:
 ```bash
 docker compose up -d --build
+```
+
+3. Прогон тестов:
+```bash
+docker compose run --rm api pytest -q
+python3 scripts/e2e_check.py
 ```
 
 Сервисы в `docker-compose.yml`:
@@ -109,7 +115,17 @@ docker compose up -d --build
 4) Celery: worker не импортировал задачи, task считался “unregistered”.  
    - Исправлено: добавлен `include=["app.worker.tasks"]` в Celery app.
 
+5) БД: исключено блокирование event loop из-за синхронной работы с БД внутри `async`-эндпоинтов.  
+   - Исправлено: переход на `AsyncSession` (SQLAlchemy asyncio); приложение использует `asyncpg` (для PostgreSQL) и `aiosqlite` (для SQLite). Миграции Alembic по-прежнему используют `psycopg` через `DATABASE_URL`.
+
+6) Интеграции: добавлены таймауты и ретраи для Redis/RabbitMQ, плюс логирование деградаций (без падения API на кеш/шину).  
+   - Redis: `socket_connect_timeout`, `socket_timeout`, `retry_on_timeout`.
+   - RabbitMQ: `connect/publish` с таймаутами и backoff retry.
+
+7) Безопасность/конфиг: усилены проверки конфигурации.  
+   - `SECRET_KEY` обязателен, если `APP_ENV` не `local`.
+   - пароль при регистрации валидируется (минимальная длина).
+
 ## 8) Итог
 
-Сервис поднимается через `docker compose`, Swagger UI доступен, эндпоинты из ТЗ работают, Redis кеш и rate limit работают, событие `new_order` реально проходит через RabbitMQ → consumer → Celery, задача выполняется в фоне.
-
+Сервис поднимается через `docker compose`, Swagger UI доступен, эндпоинты из ТЗ работают, Redis кеш и rate limit работают, событие `new_order` реально проходит через RabbitMQ → consumer → Celery, задача выполняется в фоне. Автотесты (pytest + e2e check) проходят.
